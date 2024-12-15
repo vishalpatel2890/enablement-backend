@@ -2,18 +2,19 @@
   "name": "react",
   "version": "1.0.0",
   "description": "",
+  "homepage": "https://vishalpatel2890.github.io/enablement-backend",
   "keywords": [],
   "main": "src/index.tsx",
   "dependencies": {
+    "lucide-react": "^0.468.0",
     "react": "^18.0.0",
+    "react-dnd": "16.0.1",
+    "react-dnd-html5-backend": "16.0.1",
     "react-dom": "^18.0.0",
-    "react-scripts": "^5.0.0",
     "react-flow": "1.0.3",
-    "@thetechcompany/react-flow-renderer": "8.0.0",
     "react-flow-renderer": "10.3.17",
     "react-modal": "3.16.1",
-    "react-dnd": "16.0.1",
-    "react-dnd-html5-backend": "16.0.1"
+    "react-scripts": "^5.0.0"
   },
   "devDependencies": {
     "@types/react": "18.2.38",

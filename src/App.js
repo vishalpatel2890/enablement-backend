@@ -1,10 +1,14 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
+import { debounce } from "lodash";
+import { Trash2 } from "lucide-react";
 import "./App.css";
+import FloatingMenu from "./FloatingMenu";
 
 const ItemType = {
   NODE: "node",
+  GROUP: "group",
 };
 
 // Color mapping object
@@ -207,6 +211,15 @@ function App() {
     setGroups((prev) => [...prev, newGroup]);
   };
 
+  const moveGroup = useCallback((dragIndex, hoverIndex) => {
+    setGroups((prevGroups) => {
+      const newGroups = [...prevGroups];
+      const [removed] = newGroups.splice(dragIndex, 1);
+      newGroups.splice(hoverIndex, 0, removed);
+      return newGroups;
+    });
+  }, []);
+
   const addLayer = (groupId) => {
     console.log(`Adding new layer to group: ${groupId}`);
     setGroups((prev) =>
@@ -238,6 +251,79 @@ function App() {
             }
           : group
       )
+    );
+  };
+
+  // Add new deletion methods
+  const deleteGroup = (groupId) => {
+    console.log(`Deleting group: ${groupId}`);
+    setGroups((prev) => prev.filter((group) => group.id !== groupId));
+    // Clean up any connections involving nodes from this group
+    setConnections((prev) =>
+      prev.filter((conn) => {
+        const fromGroup = groups.find((g) =>
+          g.layers.flat().some((n) => n.id === conn.from)
+        );
+        const toGroup = groups.find((g) =>
+          g.layers.flat().some((n) => n.id === conn.to)
+        );
+        return fromGroup?.id !== groupId && toGroup?.id !== groupId;
+      })
+    );
+  };
+
+  const deleteLayer = (groupId, layerIndex) => {
+    console.log(`Deleting layer ${layerIndex} from group ${groupId}`);
+    setGroups((prev) =>
+      prev.map((group) => {
+        if (group.id !== groupId) return group;
+
+        // Don't allow deleting the last layer
+        if (group.layers.length <= 1) {
+          alert("Cannot delete the last layer");
+          return group;
+        }
+
+        const nodeIdsInLayer = group.layers[layerIndex].map((node) => node.id);
+        // Remove connections involving nodes in this layer
+        setConnections((prev) =>
+          prev.filter(
+            (conn) =>
+              !nodeIdsInLayer.includes(conn.from) &&
+              !nodeIdsInLayer.includes(conn.to)
+          )
+        );
+
+        return {
+          ...group,
+          layers: group.layers.filter((_, idx) => idx !== layerIndex),
+        };
+      })
+    );
+  };
+
+  const deleteNode = (nodeId, groupId, layerIndex) => {
+    console.log(`Deleting node ${nodeId}`);
+    setGroups((prev) =>
+      prev.map((group) => ({
+        ...group,
+        layers: group.layers.map((layer, idx) =>
+          group.id === groupId && idx === layerIndex
+            ? layer.filter((node) => node.id !== nodeId)
+            : layer
+        ),
+      }))
+    );
+    // Remove any connections involving this node
+    setConnections((prev) =>
+      prev.filter((conn) => conn.from !== nodeId && conn.to !== nodeId)
+    );
+  };
+
+  const deleteConnection = (fromId, toId) => {
+    console.log(`Deleting connection from ${fromId} to ${toId}`);
+    setConnections((prev) =>
+      prev.filter((conn) => !(conn.from === fromId && conn.to === toId))
     );
   };
 
@@ -344,17 +430,29 @@ function App() {
         }}
         onClick={() => handleNodeClick(node.id)}
       >
-        <p>{node.label}</p>
-        <button
-          style={{
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-          onClick={() => openModal(node)}
-        >
-          Edit
-        </button>
+        <div className="node-header">
+          <p>{node.label}</p>
+          <div className="node-actions">
+            <button
+              className="edit-button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openModal(node);
+              }}
+            >
+              Edit
+            </button>
+            <button
+              className="delete-button"
+              onClick={(e) => {
+                e.stopPropagation();
+                deleteNode(node.id, groupId, layerIndex);
+              }}
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
+        </div>
       </div>
     );
   };
@@ -367,6 +465,15 @@ function App() {
 
     return (
       <div ref={drop} className="layer">
+        <div className="layer-header">
+          <span>Layer {layerIndex + 1}</span>
+          <button
+            className="delete-button"
+            onClick={() => deleteLayer(groupId, layerIndex)}
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
         <div className="layer-content">
           {layer.map((node) => (
             <Node
@@ -384,6 +491,136 @@ function App() {
         >
           +
         </button>
+      </div>
+    );
+  };
+
+  const DraggableGroup = ({ group, index }) => {
+    const ref = useRef(null);
+
+    // Create a debounced version of moveGroup
+    const debouncedMoveGroup = useCallback(
+      debounce(
+        (dragIndex, hoverIndex) => {
+          moveGroup(dragIndex, hoverIndex);
+        },
+        50,
+        { trailing: true }
+      ),
+      [moveGroup]
+    );
+
+    // Cleanup debounce on unmount
+    useEffect(() => {
+      return () => {
+        debouncedMoveGroup.cancel();
+      };
+    }, [debouncedMoveGroup]);
+
+    const [{ isDragging }, drag] = useDrag({
+      type: ItemType.GROUP,
+      item: { type: ItemType.GROUP, index },
+      collect: (monitor) => ({
+        isDragging: monitor.isDragging(),
+      }),
+    });
+
+    const [{ handlerId }, drop] = useDrop({
+      accept: ItemType.GROUP,
+      collect(monitor) {
+        return {
+          handlerId: monitor.getHandlerId(),
+          isOver: monitor.isOver(),
+        };
+      },
+      hover(item, monitor) {
+        if (!ref.current) {
+          return;
+        }
+
+        // Check if item is of correct type
+        if (item.type !== ItemType.GROUP) {
+          return;
+        }
+
+        const dragIndex = item.index;
+        const hoverIndex = index;
+
+        // Don't replace items with themselves
+        if (dragIndex === hoverIndex) {
+          return;
+        }
+
+        // Only perform the move when the mouse has crossed half of the items height
+        const hoverBoundingRect = ref.current.getBoundingClientRect();
+        const hoverMiddleY =
+          (hoverBoundingRect.bottom - hoverBoundingRect.top) / 2;
+        const clientOffset = monitor.getClientOffset();
+
+        if (!clientOffset) {
+          return;
+        }
+
+        const hoverClientY = clientOffset.y - hoverBoundingRect.top;
+
+        // Dragging downwards
+        if (dragIndex < hoverIndex && hoverClientY < hoverMiddleY) {
+          return;
+        }
+
+        // Dragging upwards
+        if (dragIndex > hoverIndex && hoverClientY > hoverMiddleY) {
+          return;
+        }
+
+        // Time to actually perform the action
+        debouncedMoveGroup(dragIndex, hoverIndex);
+
+        // Note: we're mutating the monitor item here!
+        // Generally it's better to avoid mutations,
+        // but it's good here for the sake of performance
+        item.index = hoverIndex;
+      },
+    });
+
+    // Combine drag and drop refs
+    const dragDropRef = (node) => {
+      drag(node);
+      drop(node);
+      ref.current = node;
+    };
+
+    return (
+      <div
+        ref={dragDropRef}
+        className="group"
+        style={{
+          backgroundColor: getGroupColor(group.id),
+          opacity: isDragging ? 0.5 : 1,
+          cursor: "move",
+        }}
+        data-handler-id={handlerId}
+      >
+        <div className="group-header">
+          <h3>{group.label}</h3>
+          <div className="group-actions">
+            <button onClick={() => addLayer(group.id)}>Add Layer</button>
+            <button
+              className="delete-button"
+              onClick={() => deleteGroup(group.id)}
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
+        </div>
+        {group.layers.map((layer, layerIndex) => (
+          <Layer
+            key={layerIndex}
+            layer={layer}
+            groupId={group.id}
+            layerIndex={layerIndex}
+          />
+        ))}
       </div>
     );
   };
@@ -412,40 +649,24 @@ function App() {
         >
           {columns.map((column, columnIndex) => (
             <div key={columnIndex} className="column">
-              {column.map((group) => (
-                <div
-                  key={group.id}
-                  className="group"
-                  style={{ backgroundColor: getGroupColor(group.id) }}
-                >
-                  <h3>{group.label}</h3>
-                  <button onClick={() => addLayer(group.id)}>Add Layer</button>
-                  {group.layers.map((layer, index) => (
-                    <Layer
-                      key={index}
-                      layer={layer}
-                      groupId={group.id}
-                      layerIndex={index}
-                    />
-                  ))}
-                </div>
-              ))}
+              {column.map((group) => {
+                const globalIndex = groups.findIndex((g) => g.id === group.id);
+                return (
+                  <DraggableGroup
+                    key={group.id}
+                    group={group}
+                    index={globalIndex}
+                  />
+                );
+              })}
             </div>
           ))}
         </div>
 
-        <div className="button-container">
-          <button onClick={addGroup}>Add Group</button>
-          <button
-            onClick={startAddingConnection}
-            style={{
-              backgroundColor: addingConnection ? "#007bff" : "#f0f0f0",
-              color: addingConnection ? "white" : "black",
-            }}
-          >
-            Add Connection
-          </button>
-        </div>
+        <FloatingMenu
+          onAddGroup={addGroup}
+          onAddConnection={startAddingConnection}
+        />
 
         {modalData && (
           <div className="modal">
